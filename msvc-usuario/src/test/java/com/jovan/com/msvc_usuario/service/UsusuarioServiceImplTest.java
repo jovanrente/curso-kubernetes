@@ -78,20 +78,27 @@ public class UsusuarioServiceImplTest {
         RequestException exception = assertThrows(RequestException.class, () -> {
             usuarioService.findById(1L);
         });
-        assertEquals(HttpStatus.NOT_FOUND, exception.getStatus());
-        assertTrue(exception.getMessage().contains("El usuario con el id 1 no existe"));
+        assertEquals(HttpStatus.NOT_FOUND, exception.getHttpStatus());
+        assertTrue(exception.getMessage().contains("Usuario con id: 1, no encontrado"));
         verify(usuarioRepository, times(1)).findById(1L);
     }
 
     @Test
     void testSave() {
-        // Mocking the static method toUsuarioEntity from UsuarioMapper is tricky without PowerMock or changing the code.
-        // Assuming UsuarioMapper.toUsuarioEntity and UsuarioMapper.toUsuarioDto work as expected.
-        // If UsuarioMapper itself needs testing, it should have its own unit test.
-        when(usuarioRepository.save(any(UsuarioEntity.class))).thenReturn(usuarioEntity);
+        when(usuarioRepository.save(any(UsuarioEntity.class))).thenAnswer(invocation -> {
+            UsuarioEntity savedEntity = invocation.getArgument(0);
+            savedEntity.setId(1L); // Simulamos que se generó un ID
+            return savedEntity;
+        });
+
         UsuarioDto result = usuarioService.save(usuarioDto);
+
         assertNotNull(result);
         assertEquals(usuarioDto.getNombre(), result.getNombre());
+        assertEquals(usuarioDto.getEmail(), result.getEmail());
+        assertEquals(usuarioDto.getPassword(), result.getPassword());
+        assertEquals(1L, result.getId());
+        
         verify(usuarioRepository, times(1)).save(any(UsuarioEntity.class));
     }
 
@@ -114,8 +121,8 @@ public class UsusuarioServiceImplTest {
         RequestException exception = assertThrows(RequestException.class, () -> {
             usuarioService.delete(1L);
         });
-        assertEquals(HttpStatus.NOT_FOUND, exception.getStatus());
-        assertTrue(exception.getMessage().contains("El usuario con el id 1 no existe"));
+        assertEquals(HttpStatus.NOT_FOUND, exception.getHttpStatus());
+        assertTrue(exception.getMessage().contains("Usuario con id: 1, no encontrado"));
         verify(usuarioRepository, times(1)).findById(1L);
         verify(usuarioRepository, never()).deleteById(anyLong());
         verify(kafkaProducer, never()).sendDeleteUser(anyString(), anyList());

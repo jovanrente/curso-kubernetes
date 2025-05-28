@@ -10,6 +10,7 @@ public class UsuarioMapper {
                 .id(usuarioEntity.getId())
                 .nombre(usuarioEntity.getNombre())
                 .email(usuarioEntity.getEmail())
+                .password(usuarioEntity.getPassword())
                 .build();
     }
 
@@ -18,6 +19,7 @@ public class UsuarioMapper {
                 .id(usuarioDto.getId())
                 .nombre(usuarioDto.getNombre())
                 .email(usuarioDto.getEmail())
+                .password(usuarioDto.getPassword())
                 .build();
     }
 }
