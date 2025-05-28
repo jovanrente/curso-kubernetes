@@ -106,14 +106,13 @@ public class UsuariocontrollerTest {
                 .id(1L)
                 .nombre("Updated User")
                 .email("updated@example.com")
-                .password("newpassword")
+                .password("newpass123")
                 .build();
         
         // Mock the findById call that happens inside the controller's update method
         when(usuarioService.findById(1L)).thenReturn(usuarioDto); 
         // Mock the save call that happens after updating fields
         when(usuarioService.save(any(UsuarioDto.class))).thenReturn(updatedDto);
-
 
         mockMvc.perform(put("/usuario/{id}", 1L)
                 .contentType(MediaType.APPLICATION_JSON)
