@@ -9,13 +9,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.support.SendResult;
-import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 
 import com.jovan.com.msvc_usuario.entities.KafkaFallbackEvent;
 import com.jovan.com.msvc_usuario.repository.KafkaFallbackEventRepository;
 
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import jakarta.transaction.Transactional;
 import java.time.LocalDateTime;
 
@@ -34,26 +35,12 @@ public class KafkaProducer {
         this.fallbackRepo = fallbackRepo;
     }
 
-    public void sendMessage(String topic, String message) {
-        try {
-            CompletableFuture<SendResult<String, Object>> future = kafkaTemplate.send(topic, message);
-            future.whenComplete((result, ex) -> {
-                if (ex == null) {
-                    logger.info("Mensaje enviado exitosamente al tópico: {} - Offset: {}", 
-                        topic, result.getRecordMetadata().offset());
-                } else {
-                    logger.error("Error al enviar mensaje a Kafka - Tópico: {} - Error: {}", 
-                        topic, ex.getMessage());
-                    handleKafkaError(topic, message, ex);
-                }
-            });
-        } catch (KafkaException e) {
-            logger.error("Error al enviar mensaje a Kafka: {}", e.getMessage());
-            handleKafkaError(topic, message, e);
-        }
-    }
 
-    @CircuitBreaker(name = "kafkaBreaker", fallbackMethod = "fallbackSendDeleteUser")
+    @Retryable(
+        value = {KafkaException.class},
+        maxAttempts = MAX_RETRY_ATTEMPTS,
+        backoff = @Backoff(delay = RETRY_DELAY_MS, multiplier = 2.0)
+    )
     public void sendDeleteUser(String topic, List<Long> userIds) {
         String message = String.join(",", userIds.stream()
                 .map(String::valueOf)
@@ -67,13 +54,23 @@ public class KafkaProducer {
                 } else {
                     logger.error("Error al enviar mensaje de eliminación a Kafka - Tópico: {} - Error: {}", 
                         topic, ex.getMessage());
-                    handleKafkaError(topic, message, ex);
+                    throw new KafkaException("Error al enviar mensaje de eliminación", ex);
                 }
             });
         } catch (KafkaException e) {
             logger.error("Error al enviar mensaje de eliminación a Kafka: {}", e.getMessage());
-            handleKafkaError(topic, message, e);
+            throw e;
         }
+    }
+
+
+    @Recover
+    public void recoverSendDeleteUser(KafkaException e, String topic, List<Long> userIds) {
+        String message = String.join(",", userIds.stream()
+                .map(String::valueOf)
+                .collect(Collectors.toList()));
+        logger.error("Recuperación después de reintentos fallidos para el tópico: {} - Error: {}", topic, e.getMessage());
+        handleKafkaError(topic, message, e);
     }
 
     private void handleKafkaError(String topic, String payload, Throwable throwable) {
@@ -88,55 +85,6 @@ public class KafkaProducer {
             logger.warn("Evento guardado en fallback - Tópico: {} - Error: {}", topic, throwable.getMessage());
         } catch (Exception e) {
             logger.error("Error al guardar fallback de Kafka: {}", e.getMessage());
-        }
-    }
-
-    public void fallbackSendDeleteUser(String topic, String payload, Throwable throwable) {
-        handleKafkaError(topic, payload, throwable);
-    }
-
-    @Transactional
-    @Scheduled(fixedRate = RETRY_DELAY_MS)
-    public void retryFailedEvents() {
-        List<KafkaFallbackEvent> events = fallbackRepo.findBySentFalse();
-        for (KafkaFallbackEvent event : events) {
-            if (event.getRetryCount() >= MAX_RETRY_ATTEMPTS) {
-                logger.warn("Evento excedió el número máximo de reintentos - Tópico: {} - Payload: {}", 
-                    event.getTopic(), event.getPayload());
-                event.setSent(true);
-                event.setError("Excedido número máximo de reintentos");
-                fallbackRepo.save(event);
-                continue;
-            }
-
-            try {
-                CompletableFuture<SendResult<String, Object>> future = 
-                    kafkaTemplate.send(event.getTopic(), event.getPayload());
-                
-                future.whenComplete((result, ex) -> {
-                    if (ex == null) {
-                        event.setSent(true);
-                        event.setLastRetryAt(LocalDateTime.now());
-                        fallbackRepo.save(event);
-                        logger.info("Evento reenviado exitosamente a Kafka - Tópico: {} - Offset: {}", 
-                            event.getTopic(), result.getRecordMetadata().offset());
-                    } else {
-                        event.setRetryCount(event.getRetryCount() + 1);
-                        event.setError(ex.getMessage());
-                        event.setLastRetryAt(LocalDateTime.now());
-                        fallbackRepo.save(event);
-                        logger.error("Error reintentando evento - Tópico: {} - Intento: {} - Error: {}", 
-                            event.getTopic(), event.getRetryCount(), ex.getMessage());
-                    }
-                });
-            } catch (KafkaException e) {
-                event.setRetryCount(event.getRetryCount() + 1);
-                event.setError(e.getMessage());
-                event.setLastRetryAt(LocalDateTime.now());
-                fallbackRepo.save(event);
-                logger.error("Error reintentando evento - Tópico: {} - Intento: {} - Error: {}", 
-                    event.getTopic(), event.getRetryCount(), e.getMessage());
-            }
         }
     }
 }

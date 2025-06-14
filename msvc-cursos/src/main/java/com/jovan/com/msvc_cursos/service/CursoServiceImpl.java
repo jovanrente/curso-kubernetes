@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 
 import com.jovan.com.msvc_cursos.mapper.CursoMapper;
 import java.util.List;
@@ -79,6 +80,7 @@ public class CursoServiceImpl implements CursoService {
 
     @Override
     @Transactional
+    @CircuitBreaker(name = "crearUsuarioBreaker", fallbackMethod = "fallbackCrearUsuario")
     public Optional<Usuario> crearUsuario(Usuario usuario, Long cursoId) {
         Optional<CursoEntity> curso = repository.findById(cursoId);
         if (curso.isPresent()) {
@@ -90,6 +92,14 @@ public class CursoServiceImpl implements CursoService {
             repository.save(curso.get());
             return Optional.of(usuarioMsvc);
         }
+        return Optional.empty();
+    }
+
+    // Método fallback para crearUsuario
+    public Optional<Usuario> fallbackCrearUsuario(Usuario usuario, Long cursoId, Exception ex) {
+        // Log del error para debugging
+        System.err.println("CircuitBreaker activado para crearUsuario: " + ex.getMessage());
+        // Retorna Optional vacío cuando el circuit breaker se activa
         return Optional.empty();
     }
 
