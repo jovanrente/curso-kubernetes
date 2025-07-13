@@ -52,7 +52,13 @@ public class UsusuarioServiceImpl implements UsuarioService {
         Optional<UsuarioEntity> usuario = usuarioRepository.findById(id);
         if(usuario.isPresent()){
             usuarioRepository.deleteById(id); 
-            kafkaProducer.sendDeleteUser("myTopic", List.of(id));
+            // Envío asíncrono del mensaje a Kafka
+            kafkaProducer.sendDeleteUser("myTopic", List.of(id))
+                .exceptionally(throwable -> {
+                    // Log del error pero no afecta la respuesta del endpoint
+                    System.err.println("Error en envío asíncrono a Kafka: " + throwable.getMessage());
+                    return null;
+                });
         }else{
             throw new RequestException(ErrorMessages.USER_NOT_FOUND, HttpStatus.NOT_FOUND,
              String.format(ErrorMessages.USER_NOT_FOUND_MESSAGE, id));

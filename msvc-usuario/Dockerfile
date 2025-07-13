@@ -28,5 +28,5 @@ ENV DB_NAME=msvc_usuario
 ENV DB_USER=root
 ENV DB_PASSWORD=admin
 EXPOSE ${PORT}
-
-ENTRYPOINT ["java","-jar","msvc-usuario-0.0.1-SNAPSHOT.jar"]
+CMD ["sh", "-c", "sleep 20 && java -jar msvc-usuario-0.0.1-SNAPSHOT.jar"]
+#ENTRYPOINT ["java","-jar","msvc-usuario-0.0.1-SNAPSHOT.jar"]

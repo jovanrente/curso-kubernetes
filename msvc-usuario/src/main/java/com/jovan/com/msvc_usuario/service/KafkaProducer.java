@@ -12,6 +12,7 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Recover;
 import org.springframework.retry.annotation.Retryable;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import com.jovan.com.msvc_usuario.entities.KafkaFallbackEvent;
@@ -35,40 +36,41 @@ public class KafkaProducer {
         this.fallbackRepo = fallbackRepo;
     }
 
+    public CompletableFuture<Void> sendDeleteUser(String topic, List<Long> userIds) {
+        String message = String.join(",", userIds.stream()
+                .map(String::valueOf)
+                .collect(Collectors.toList()));
+        
+        return CompletableFuture.runAsync(() -> {
+            try {
+                sendMessageWithRetry(topic, message);
+            } catch (Exception e) {
+                logger.error("Error en envío asíncrono para tópico: {} - Error: {}", topic, e.getMessage());
+                handleKafkaError(topic, message, e);
+            }
+        });
+    }
 
     @Retryable(
         value = {KafkaException.class},
         maxAttempts = MAX_RETRY_ATTEMPTS,
         backoff = @Backoff(delay = RETRY_DELAY_MS, multiplier = 2.0)
     )
-    public void sendDeleteUser(String topic, List<Long> userIds) {
-        String message = String.join(",", userIds.stream()
-                .map(String::valueOf)
-                .collect(Collectors.toList()));
+    private void sendMessageWithRetry(String topic, String message) {
         try {
             CompletableFuture<SendResult<String, Object>> future = kafkaTemplate.send(topic, message);
-            future.whenComplete((result, ex) -> {
-                if (ex == null) {
-                    logger.info("Mensaje de eliminación enviado exitosamente al tópico: {} - Offset: {}", 
-                        topic, result.getRecordMetadata().offset());
-                } else {
-                    logger.error("Error al enviar mensaje de eliminación a Kafka - Tópico: {} - Error: {}", 
-                        topic, ex.getMessage());
-                    throw new KafkaException("Error al enviar mensaje de eliminación", ex);
-                }
-            });
-        } catch (KafkaException e) {
-            logger.error("Error al enviar mensaje de eliminación a Kafka: {}", e.getMessage());
-            throw e;
+            SendResult<String, Object> result = future.get();
+            logger.info("Mensaje enviado exitosamente al tópico: {} - Offset: {}", 
+                topic, result.getRecordMetadata().offset());
+        } catch (Exception e) {
+            logger.error("Error al enviar mensaje a Kafka: {}", e.getMessage());
+            throw new KafkaException("Error al enviar mensaje", e);
         }
     }
 
-
+    // Método de recuperación que se ejecuta cuando fallan todos los reintentos
     @Recover
-    public void recoverSendDeleteUser(KafkaException e, String topic, List<Long> userIds) {
-        String message = String.join(",", userIds.stream()
-                .map(String::valueOf)
-                .collect(Collectors.toList()));
+    private void recoverSendMessage(KafkaException e, String topic, String message) {
         logger.error("Recuperación después de reintentos fallidos para el tópico: {} - Error: {}", topic, e.getMessage());
         handleKafkaError(topic, message, e);
     }

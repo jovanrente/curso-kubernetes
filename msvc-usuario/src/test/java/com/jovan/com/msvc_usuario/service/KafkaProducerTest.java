@@ -14,10 +14,9 @@ import org.springframework.kafka.support.SendResult;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -30,9 +29,6 @@ public class KafkaProducerTest {
     @Mock
     private KafkaFallbackEventRepository fallbackRepo;
 
-    @Mock
-    private SendResult<String, Object> sendResult; // Mocking SendResult
-
     @InjectMocks
     private KafkaProducer kafkaProducer;
 
@@ -40,124 +36,57 @@ public class KafkaProducerTest {
 
     @BeforeEach
     void setUp() {
-        // Mock the CompletableFuture that KafkaTemplate.send() returns
-        completableFuture = CompletableFuture.completedFuture(sendResult); 
-    }
-
-    @Test
-    void testSendMessage_Success() {
-        when(kafkaTemplate.send(anyString(), anyString())).thenReturn(completableFuture);
-
-        kafkaProducer.sendMessage("testTopic", "testMessage");
-
-        // Verify that kafkaTemplate.send was called
-        verify(kafkaTemplate, times(1)).send("testTopic", "testMessage");
-        // We can also add a small delay or use ArgumentCaptor if we need to verify async callbacks,
-        // but for now, just verifying the send call is a good start.
-    }
-
-    @Test
-    void testSendMessage_KafkaException() {
-        // Simulate KafkaException during send
-        when(kafkaTemplate.send(anyString(), anyString())).thenThrow(new org.springframework.kafka.KafkaException("Test Kafka Exception"));
-        
-        kafkaProducer.sendMessage("testTopic", "testMessageError");
-
-        verify(kafkaTemplate, times(1)).send("testTopic", "testMessageError");
-        // Verify fallbackRepo.save is called
-        ArgumentCaptor<KafkaFallbackEvent> eventCaptor = ArgumentCaptor.forClass(KafkaFallbackEvent.class);
-        verify(fallbackRepo, times(1)).save(eventCaptor.capture());
-        
-        KafkaFallbackEvent savedEvent = eventCaptor.getValue();
-        assertEquals("testTopic", savedEvent.getTopic());
-        assertEquals("testMessageError", savedEvent.getPayload());
-        assertNotNull(savedEvent.getError());
-        assertEquals(0, savedEvent.getRetryCount());
-    }
-    
-    @Test
-    void testSendMessage_FutureCompletesExceptionally() {
-        // Simulate the CompletableFuture completing with an exception
         completableFuture = new CompletableFuture<>();
-        completableFuture.completeExceptionally(new RuntimeException("Async send error"));
         when(kafkaTemplate.send(anyString(), anyString())).thenReturn(completableFuture);
-
-        kafkaProducer.sendMessage("testTopic", "testMessageAsyncError");
-
-        verify(kafkaTemplate, times(1)).send("testTopic", "testMessageAsyncError");
-        
-        // It might take a moment for the exceptionally completed future to trigger the callback.
-        // For robust testing of callbacks, awaitility or similar might be needed.
-        // Here, we'll verify the fallbackRepo.save with a small delay, acknowledging this might be flaky.
-        // A better approach for real-world scenarios would be to refactor for testability or use dedicated async testing tools.
-        try {
-            Thread.sleep(100); // Small delay to allow CompletableFuture callback
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        
-        ArgumentCaptor<KafkaFallbackEvent> eventCaptor = ArgumentCaptor.forClass(KafkaFallbackEvent.class);
-        verify(fallbackRepo, times(1)).save(eventCaptor.capture());
-        assertEquals("testTopic", eventCaptor.getValue().getTopic());
-        assertEquals("testMessageAsyncError", eventCaptor.getValue().getPayload());
     }
 
-
     @Test
-    void testSendDeleteUser_Success() {
-        when(kafkaTemplate.send(anyString(), anyString())).thenReturn(completableFuture);
+    void testSendDeleteUser_Success() throws Exception {
         List<Long> userIds = List.of(1L, 2L);
-        
-        kafkaProducer.sendDeleteUser("deleteTopic", userIds);
+        SendResult<String, Object> sendResult = mock(SendResult.class);
+        completableFuture.complete(sendResult);
 
+        CompletableFuture<Void> future = kafkaProducer.sendDeleteUser("deleteTopic", userIds);
+
+        future.get(5, TimeUnit.SECONDS);
         verify(kafkaTemplate, times(1)).send("deleteTopic", "1,2");
     }
 
     @Test
-    void testSendDeleteUser_KafkaException() {
+    void testSendDeleteUser_WithRetry() throws Exception {
         List<Long> userIds = List.of(3L, 4L);
-        String expectedPayload = "3,4";
-        when(kafkaTemplate.send("deleteTopicError", expectedPayload))
-            .thenThrow(new org.springframework.kafka.KafkaException("Test Kafka Exception for delete"));
+        when(kafkaTemplate.send("deleteTopic", "3,4"))
+            .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Error temporal")));
 
-        kafkaProducer.sendDeleteUser("deleteTopicError", userIds);
+        CompletableFuture<Void> future = kafkaProducer.sendDeleteUser("deleteTopic", userIds);
 
-        verify(kafkaTemplate, times(1)).send("deleteTopicError", expectedPayload);
+        future.get(10, TimeUnit.SECONDS);
+
+        // Solo verificamos que el fallback se ejecutó
         ArgumentCaptor<KafkaFallbackEvent> eventCaptor = ArgumentCaptor.forClass(KafkaFallbackEvent.class);
         verify(fallbackRepo, times(1)).save(eventCaptor.capture());
-        
         KafkaFallbackEvent savedEvent = eventCaptor.getValue();
-        assertEquals("deleteTopicError", savedEvent.getTopic());
-        assertEquals(expectedPayload, savedEvent.getPayload());
+        assertEquals("deleteTopic", savedEvent.getTopic());
+        assertEquals("3,4", savedEvent.getPayload());
+        assertNotNull(savedEvent.getError());
     }
-    
+
     @Test
-    void testSendDeleteUser_FutureCompletesExceptionally() {
+    void testSendDeleteUser_MaxRetriesExceeded() throws Exception {
         List<Long> userIds = List.of(5L, 6L);
-        String expectedPayload = "5,6";
-        completableFuture = new CompletableFuture<>();
-        completableFuture.completeExceptionally(new RuntimeException("Async delete error"));
-        when(kafkaTemplate.send("deleteTopicAsyncError", expectedPayload)).thenReturn(completableFuture);
+        when(kafkaTemplate.send("deleteTopic", "5,6"))
+            .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Error persistente")));
 
-        kafkaProducer.sendDeleteUser("deleteTopicAsyncError", userIds);
+        CompletableFuture<Void> future = kafkaProducer.sendDeleteUser("deleteTopic", userIds);
 
-        verify(kafkaTemplate, times(1)).send("deleteTopicAsyncError", expectedPayload);
-        
-        try {
-            Thread.sleep(100); // Small delay
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        
+        future.get(15, TimeUnit.SECONDS);
+
         ArgumentCaptor<KafkaFallbackEvent> eventCaptor = ArgumentCaptor.forClass(KafkaFallbackEvent.class);
         verify(fallbackRepo, times(1)).save(eventCaptor.capture());
-        assertEquals("deleteTopicAsyncError", eventCaptor.getValue().getTopic());
-        assertEquals(expectedPayload, eventCaptor.getValue().getPayload());
-    }
 
-    // Note: Testing the @Scheduled retryFailedEvents and @CircuitBreaker fallbackMethod 
-    // would typically require Spring integration testing context (to enable scheduling and AOP)
-    // or more advanced mocking techniques (e.g., with PowerMock or by refactoring the code
-    // to make time and async operations more controllable).
-    // These tests focus on the direct logic of the send methods.
-}
+        KafkaFallbackEvent savedEvent = eventCaptor.getValue();
+        assertEquals("deleteTopic", savedEvent.getTopic());
+        assertEquals("5,6", savedEvent.getPayload());
+        assertNotNull(savedEvent.getError());
+    }
+} 

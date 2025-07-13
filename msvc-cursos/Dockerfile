@@ -20,5 +20,5 @@ WORKDIR /app
 COPY --from=build /app/msvc-cursos/target/msvc-cursos-0.0.1-SNAPSHOT.jar .
 
 EXPOSE 8002
-
-ENTRYPOINT ["java","-jar","msvc-cursos-0.0.1-SNAPSHOT.jar"]
+CMD ["sh", "-c", "sleep 20 && java -jar msvc-cursos-0.0.1-SNAPSHOT.jar"]
+#ENTRYPOINT ["java","-jar","msvc-cursos-0.0.1-SNAPSHOT.jar"]
